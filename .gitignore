@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.env
+.vscode/
+.idea/
+.DS_Store
+
+# Donn�es volumineuses (d�commente si tu veux les ignorer)
+# *.npy
+# *.npz
+# *.mat
