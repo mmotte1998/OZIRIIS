@@ -6,7 +6,7 @@ import time
 import scipy as scp
 
 class DM:
-	def __init__(self,simu=1 ,model='ALPAO97'):
+	def __init__(self,simu=1 ,model='ALPAO97', M2C = None):
 		""" Initialize the DM class.
 		:param model: DM model, currently only 'ALPAO' is supported
 		"""
@@ -47,7 +47,8 @@ class DM:
 				os.system("tmux new-session -d -s dmloop")
 				os.system("tmux send-keys -t dmloop 'daodmAlpaoCtrl -L BAX418 /tmp/dmCmd.im.shm' C-m")
 			# --------- Modal Basis ---------
-			self.M2C = scp.io.loadmat('/home/manip/dao/daoZernike/OZIRIIS/BAX418-Z2C.mat')['Z2C'].T
+			if M2C is None:
+				self.M2C = scp.io.loadmat('/home/manip/dao/daoZernike/OZIRIIS/BAX418-Z2C.mat')['Z2C'].T
 			self.IF = scp.io.loadmat('/home/manip/dao/daoZernike/OZIRIIS/BAX418-IF.mat')['influenceMatrix'].T
 			self.IF_volume = scp.io.loadmat('/home/manip/dao/daoZernike/OZIRIIS/IF_volume.mat')['IF_volume'].T
 			# --------- Flat ---------

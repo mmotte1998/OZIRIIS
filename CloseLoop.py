@@ -79,23 +79,96 @@ class CloseLoop:
         else:
             logger.info("No interaction matrix entered, computing one")
             self.IM = self.compute_new_IM()  # Compute default IM
+    def _interaction_matrix(self,stroke, dm, cam,nmodes = None, precropping = [20,-20,20,-20], nmeasurement:int = 1):
+        if nmodes is None:
+            M2C = dm.M2C
+            nmodes = M2C.shape[1] #define the nbr of modes
+        # nsignals = [submasks[0][submasks[0]].size, submasks[1][submasks[1]].size]
+        
+        out = 0
+        for _ in range(nmeasurement):
+            interactionmatrix=[]
+            for i in tqdm.tqdm(range(nmodes)):
+                dm.poke_mode(stroke, i)
+                time.sleep(0.05)
 
-    def compute_new_IM(self, stroke: float = 0.008, nmeasurement: int = 10, cam_nFrames: int = None) -> np.ndarray:
+                image = cam.get()
+                image = image[precropping[0]:precropping[1],precropping[2]:precropping[3]]
+                normalisation = np.sum(image)
+                image /=normalisation
+            
+                signal_plus = np.copy(image)   
+                #print(f'the shape is {signals_plus[1].shape}')
+                dm.poke_mode(-stroke,i)
+                time.sleep(0.05)
+        
+                image = cam.get()
+                image = image[precropping[0]:precropping[1],precropping[2]:precropping[3]]
+                image/=image.sum()
+                signal_minus = np.copy(image)  
+                #print(f'the shape is {signals_minus[1].shape}')
+                interactionmatrix.append(0.5*(signal_plus-signal_minus)/stroke)
+            dm.set_flat_surf()
+            out += np.array(interactionmatrix)
+        out /= nmeasurement
+        
+        # Masque uniquement de cette région
+        return out
+    def _interaction_matrix_Zonal(self, stroke, dm, cam, nmodes = None, precropping = [20,-20,20,-20], nmeasurement:int = 1):
+
+        if nmodes is None:
+            M2C = dm.M2C
+            nmodes = M2C.shape[0] #define the nbr of modes
+        # nsignals = [submasks[0][submasks[0]].size, submasks[1][submasks[1]].size]
+        
+        out = 0
+        for _ in range(nmeasurement):
+            interactionmatrix=[]
+            for i in tqdm.tqdm(range(nmodes)):
+                vector = np.zeros(nmodes)
+                vector[i] = stroke
+                dm.poke_vector(vector)
+                time.sleep(0.01)
+
+                image = cam.get()
+                image = image[precropping[0]:precropping[1],precropping[2]:precropping[3]]
+                normalisation = np.sum(image)
+                image /=normalisation
+                
+                signal_plus = np.copy(image)   
+                #print(f'the shape is {signals_plus[1].shape}')
+                vector[i] = -stroke
+                dm.poke_vector(vector)
+                time.sleep(0.01)
+
+                image = cam.get()
+                image = image[precropping[0]:precropping[1],precropping[2]:precropping[3]]
+                image/=image.sum()
+                signal_minus = np.copy(image)  
+                #print(f'the shape is {signals_minus[1].shape}')
+                interactionmatrix.append(0.5*(signal_plus-signal_minus)/stroke)
+            dm.set_flat_surf()
+            out += np.array(interactionmatrix)
+            out /= nmeasurement
+
+            # Masque uniquement de cette région
+            return out
+    def compute_new_IM(self, stroke: float = 0.008, nmeasurements: int = 10, cam_nFrames: int = None) -> np.ndarray:
         # Compute interaction matrix either modal or zonal
         self._IM_stroke = stroke
-        self._IM_nmeasurement = nmeasurement
+        self._IM_nmeasurement = nmeasurements
         if cam_nFrames is not None:
             self.update_nFrames(np.abs(int(cam_nFrames)))
         self._IM_nframes = self.cam.nFrames
         if self.IM_modal:
-            IM = interaction_matrix(stroke, self.dm, self.cam, precropping=self.precropping_data, nmeasurement=nmeasurement)
+            IM = self._interaction_matrix(stroke, self.dm, self.cam, precropping=self.precropping_data, nmeasurement=nmeasurements)
         else:
-            IM = interaction_matrix_Zonal(stroke, self.dm, self.cam, precropping=self.precropping_data, nmeasurement=nmeasurement)
+            IM = self._interaction_matrix_Zonal(stroke, self.dm, self.cam, precropping=self.precropping_data, nmeasurement=nmeasurements)
         self.IM_fullframe = IM
         IM1 = np.zeros((self.signalref.size, IM.shape[0]))
         for i in range(IM.shape[0]):
             IM1[:, i] = self.signal_processing_pupils_optimised(IM[i, ...])
-
+        self.IM = IM1
         self.inversion_IM(IM=IM1)
         return IM1
     def reference_intensities(self,crop=3e2, phase_shift_ZWFS=[-0.6*np.pi,0.3*np.pi], size_psf = 10.45, precropping = [20,-20,20,-20]):

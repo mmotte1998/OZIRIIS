@@ -14,7 +14,7 @@ from matplotlib.figure import Figure  # Type hint for matplotlib Figure
 from openpyxl import load_workbook, Workbook  # XLSX workbook read/write
 from openpyxl.styles import Alignment, Font  # Cell styling for headers
 
-from .CloseLoop import CloseLoop  # Target class we save/reload around
+from OZIRIIS.CloseLoop import CloseLoop  # Target class we save/reload around
 
 logging.basicConfig(level=logging.INFO)  # Configure root logger (INFO)
 logger = logging.getLogger(__name__)  # Module-level logger
@@ -23,11 +23,11 @@ logger = logging.getLogger(__name__)  # Module-level logger
 class OziriisIO:
     """Save/load utility + XLSX logging for CloseLoop sessions."""  # Class purpose docstring
 
-    def __init__(self, savedir: str = "data", logdir: str = "log"):
-        self.savedir = savedir  # Base directory where sessions are saved
-        os.makedirs(savedir, exist_ok=True)  # Ensure save directory exists
-        os.makedirs(logdir, exist_ok=True)  # Ensure log directory exists
-        self.log_xlsx_path = os.path.join(logdir, "log_OZIRIIS.xlsx")  # Path to global XLSX journal
+    def __init__(self, common_path: str = '/media/manip/4E3B-E8FD/nextcloud/These/Experimentation_bench/OZIRIIS/',savedir: str = "data", logdir: str = "log"):
+        self.savedir = common_path+savedir  # Base directory where sessions are saved
+        os.makedirs(common_path+savedir, exist_ok=True)  # Ensure save directory exists
+        os.makedirs(common_path+logdir, exist_ok=True)  # Ensure log directory exists
+        self.log_xlsx_path = os.path.join(common_path+logdir, "log_OZIRIIS.xlsx")  # Path to global XLSX journal
 
     # --------------------------
     # Small helpers
@@ -467,12 +467,45 @@ class OziriisIO:
         if not has_header:  # New sheet → write header from scratch
             write_header(header_cols)
         else:
-            missing = [c for c in header_cols if c not in existing]  # Columns to append
-            for name in missing:
-                ws.cell(row=2, column=ws.max_column + 1).value = name  # Append header name
-            final_cols = [ws.cell(row=2, column=c).value for c in range(1, ws.max_column + 1)]  # Read final order
-            write_header(final_cols)  # Rebuild row-1 merges
-            header_cols = final_cols  # Use final order for writing values
+            # Re-read the current header row (row 2)
+            existing = [ws.cell(row=2, column=c).value for c in range(1, ws.max_column + 1)]
+            existing = [x for x in existing if x not in (None, "")]
+
+            # Where to insert new columns? -> just before the first of 'details' or 'comment'
+            def _find_anchor(cols):
+                for name in ("details", "comment"):
+                    if name in cols:
+                        # openpyxl is 1-based for column indices
+                        return cols.index(name) + 1
+                # If Notes are not present yet, append at the end
+                return ws.max_column + 1
+
+            anchor = _find_anchor(existing)
+
+            # Compute which columns are missing (ignore Notes; we’ll ensure them later)
+            missing = [c for c in header_cols if c not in existing and c not in ("details", "comment")]
+
+            if missing:
+                # Insert a span just before Notes and write the new header names there
+                ws.insert_cols(anchor, amount=len(missing))
+                for j, name in enumerate(missing, start=anchor):
+                    ws.cell(row=2, column=j).value = name
+
+            # Make sure 'details' and 'comment' exist (at the end) in that order
+            def _header_values():
+                return [ws.cell(row=2, column=c).value for c in range(1, ws.max_column + 1)]
+
+            hdr = _header_values()
+            for name in ("details", "comment"):
+                if name not in hdr:
+                    ws.cell(row=2, column=ws.max_column + 1).value = name
+                    hdr = _header_values()  # refresh after each append
+
+            # Rebuild the merged group titles (row 1) over the final physical order
+            final_cols = _header_values()
+            write_header(final_cols)
+            header_cols = final_cols
+
 
         details_text = ""  # Default README content
         try:
@@ -752,3 +785,104 @@ class OziriisIO:
                 pass  # Best-effort cleanup
 
         return cl, results, session_root  # Return reconstructed objects and session root
+    def load_data(self, zip_or_dir: str, keep_extracted: bool = False, load_figures: bool = True):
+        """Load *only* metadata JSON and raw results from a saved session.
+
+        Parameters
+        ----------
+        zip_or_dir : str
+            Path to a session *.zip* produced by :meth:`save_all`, or an extracted session directory.
+        keep_extracted : bool, optional
+            If ``zip_or_dir`` is a zip file, keep the temporary extraction directory instead of deleting it.
+        load_figures : bool, optional
+            If True, unpickle ``*.fig.pkl`` Matplotlib figures found in the results folder.
+
+        Returns
+        -------
+        tuple(dict, dict, str)
+            (metadata_dict, results_dict, session_root_directory)
+
+        Notes
+        -----
+        This method does **not** rebuild a :class:`CloseLoop` instance and does not load arrays such as
+        IM/pupil/submask from ``metadata/``. It is intended for lightweight inspection or post-processing of
+        scalar metadata and raw results.
+        """
+        # Detect whether we are dealing with a zip archive or a directory
+        cleanup_needed = False
+        if os.path.isdir(zip_or_dir):
+            extracted_dir = zip_or_dir  # Use folder as-is
+        else:
+            tmpdir = tempfile.mkdtemp(prefix="oziriis_load_")  # Create temporary extraction directory
+            with zipfile.ZipFile(zip_or_dir, "r") as zf:
+                zf.extractall(tmpdir)  # Extract all session contents
+            extracted_dir = tmpdir
+            cleanup_needed = not keep_extracted
+
+        # Locate the session root (typically the single timestamped subfolder)
+        subdirs = [p for p in os.listdir(extracted_dir) if os.path.isdir(os.path.join(extracted_dir, p))]
+        session_root = os.path.join(extracted_dir, subdirs[0]) if len(subdirs) == 1 else extracted_dir
+
+        # Find metadata JSON (prefer the metadata/ subfolder, with backward compatibility)
+        meta_dir = os.path.join(session_root, "metadata")
+        meta_candidates = sorted(glob.glob(os.path.join(meta_dir, "*metadata*.json"))) if os.path.isdir(meta_dir) else []
+        if not meta_candidates:
+            meta_candidates = sorted(glob.glob(os.path.join(session_root, "**", "*_metadata_*.json"), recursive=True))
+            if not meta_candidates:
+                meta_candidates = sorted(glob.glob(os.path.join(session_root, "**", "*metadata*.json"), recursive=True))
+            if not meta_candidates:
+                if cleanup_needed:
+                    try:
+                        shutil.rmtree(extracted_dir)
+                    except Exception:
+                        pass
+                raise FileNotFoundError("Metadata files not found in the session")
+            meta_dir = session_root  # Old layout fallback
+        meta_path = meta_candidates[-1]  # Pick the newest metadata file
+
+        # Load metadata as a plain dict (unflattened)
+        metadata = self._load_json(meta_path)
+
+        # Collect results (arrays/scalars/figures/png paths) from results/ subfolder if present
+        results = {"arrays": {}, "scalars": {}, "figures": {}, "png_paths": []}
+        results_dir = os.path.join(session_root, "results")
+        if os.path.isdir(results_dir):
+            # Arrays (*.npy)
+            for npy_path in sorted(glob.glob(os.path.join(results_dir, "*.npy"))):
+                key = os.path.splitext(os.path.basename(npy_path))[0]
+                try:
+                    results["arrays"][key] = np.load(npy_path, allow_pickle=True)
+                except Exception as e:
+                    logger.warning(f"Failed to load array {npy_path}: {e}")
+            # Scalars (scalars.json)
+            scalars_path = os.path.join(results_dir, "scalars.json")
+            if os.path.exists(scalars_path):
+                try:
+                    with open(scalars_path, "r") as f:
+                        results["scalars"] = json.load(f)
+                except Exception as e:
+                    logger.warning(f"Failed to load scalars.json: {e}")
+            # Figures (*.fig.pkl) – optional
+            if load_figures:
+                for pkl_path in sorted(glob.glob(os.path.join(results_dir, "*.fig.pkl"))):
+                    key = os.path.basename(pkl_path).replace(".fig.pkl", "")
+                    try:
+                        import pickle
+                        with open(pkl_path, "rb") as f:
+                            results["figures"][key] = pickle.load(f)
+                    except Exception as e:
+                        logger.warning(f"Failed to load figure {pkl_path}: {e}")
+            # PNGs (*.png)
+            results["png_paths"] = sorted(glob.glob(os.path.join(results_dir, "*.png")))
+
+        # Cleanup temporary extraction directory if applicable
+        if cleanup_needed:
+            try:
+                shutil.rmtree(extracted_dir)
+            except Exception:
+                pass
+
+        return metadata, results, session_root
+
+
+

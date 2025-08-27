@@ -251,3 +251,111 @@ def save_plot_animation_as_gif(data_sequence, gif_filename='animated_plot.gif',
         shutil.rmtree(temp_dir)
 
     print(f"GIF saved as '{gif_filename}'.")
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.colors import TwoSlopeNorm
+
+# --- Option LaTeX (active si tu veux) ---
+USE_LATEX = True
+if USE_LATEX:
+    plt.rcParams.update({
+        "text.usetex": True,
+        "font.family": "serif",
+        "font.size": 12,
+        # Ajoute ce qu'il faut dans le préambule si nécessaire
+        # "text.latex.preamble": r"\usepackage{siunitx}",
+    })
+
+def make_valid_map_and_indices(nAct=11, nAct_radius=5.5):
+    grid = np.mgrid[0:nAct, 0:nAct]
+    rgrid = np.sqrt((grid[0] - nAct/2 + 0.5)**2 + (grid[1] - nAct/2 + 0.5)**2)
+    valid = (rgrid < nAct_radius)
+    valid_numbers = np.zeros((nAct, nAct), dtype=int)
+    valid_numbers[valid] = np.arange(1, int(valid.sum()) + 1)
+    return valid, valid_numbers
+
+def ensure_if_shape(IF_volume, n_valid_expected):
+    IFv = np.asarray(IF_volume)
+    if IFv.ndim != 3:
+        raise ValueError(f"IF_volume doit être 3D, reçu {IFv.ndim}D avec shape={IFv.shape}")
+    axes_matching = [ax for ax, s in enumerate(IFv.shape) if s == n_valid_expected]
+    if not axes_matching:
+        raise ValueError(f"Aucun axe ne vaut {n_valid_expected} dans {IFv.shape}")
+    if len(axes_matching) > 1:
+        raise ValueError(f"Ambigu: plusieurs axes valent {n_valid_expected} dans {IFv.shape}")
+    IFv = np.moveaxis(IFv, axes_matching[0], 0)
+    return IFv  # (nValid, Ny, Nx)
+
+def plot_if_grid_alpao97(
+    IF_volume,
+    nAct=11, nAct_radius=5.5,
+    cmap="RdBu_r",
+    show_numbers=True,
+    tile_size_in=1.0,           # taille d’une tuile en pouces (≈ compaction globale)
+    wspace=0.06, hspace=0.06,   # espace relatif inter‑tuiles
+    left=0.02, right=0.90, top=0.92, bottom=0.04,  # marges figure
+    dpi=160,
+    title=r"Influence Functions -- ALPAO 97",
+):
+    valid_map, idx_map = make_valid_map_and_indices(nAct, nAct_radius)
+    n_valid_expected = int(valid_map.sum())
+
+    IFv = ensure_if_shape(IF_volume, n_valid_expected)
+    nValid, Ny, Nx = IFv.shape
+
+    # Échelle symétrique
+    vmax = float(np.nanmax(np.abs(IFv))) if np.isfinite(np.nanmax(np.abs(IFv))) else 1.0
+    if vmax == 0: vmax = 1.0
+    norm = TwoSlopeNorm(vcenter=0.0, vmin=-vmax, vmax=vmax)
+
+    # Figure compacte
+    fig_w = tile_size_in * nAct
+    fig_h = tile_size_in * nAct
+    fig = plt.figure(figsize=(fig_w, fig_h), dpi=dpi)
+    gs = fig.add_gridspec(nAct, nAct, wspace=wspace, hspace=hspace)
+    axes = np.empty((nAct, nAct), dtype=object)
+    visible_axes = []
+
+    for i in range(nAct):
+        for j in range(nAct):
+            ax = fig.add_subplot(gs[i, j])
+            axes[i, j] = ax
+
+            if not valid_map[i, j]:
+                ax.set_visible(False)
+                continue
+
+            visible_axes.append(ax)
+            ax.set_xticks([]); ax.set_yticks([])
+            for sp in ax.spines.values():
+                sp.set_visible(False)
+            ax.set_aspect("equal", adjustable="box")
+
+            act_idx = idx_map[i, j] - 1  # 0..96
+            img = IFv[act_idx]
+            ax.imshow(img, origin="lower", cmap=cmap, norm=norm, interpolation="nearest")
+
+            if show_numbers:
+                ax.text(0.06, 0.88, f"{act_idx+1}",
+                        transform=ax.transAxes, fontsize=9,
+                        fontweight="bold",
+                        bbox=dict(facecolor="white", edgecolor="none", alpha=0.65, pad=1.2))
+
+    # Barre de couleur alignée sur les axes visibles (évite le chevauchement)
+    mappable = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
+    cbar = fig.colorbar(
+        mappable,
+        ax=visible_axes,
+        location="right",
+        fraction=0.025,   # largeur relative de la barre
+        pad=0.04,         # espace entre barre et grilles
+    )
+    cbar.set_label(r"Amplitude IF (unités DM)")
+    cbar.ax.tick_params(labelsize=8)  
+
+    # Titre LaTeX éventuel et marges serrées
+    if title:
+        fig.suptitle(title, y=0.985)
+    fig.subplots_adjust(left=left, right=right, top=top, bottom=bottom)
+
+    return fig, axes
